@@ -2,6 +2,7 @@ import base64
 import binascii
 import json
 import logging
+import os
 import threading
 import webbrowser
 from dataclasses import dataclass
@@ -14,11 +15,12 @@ import pyperclip
 import requests
 import tkinter as tk
 import yaml
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 
 ROOT_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = ROOT_DIR / "config.yaml"
+DEFAULT_EXPORT_DIR = ROOT_DIR / "exports"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,6 +66,33 @@ class Node:
         encoded = base64.b64encode(auth.encode("utf-8")).decode("utf-8")
         label = self.title or self.ip
         return f"ss://{encoded}#{quote(label)}"
+
+    def to_clash_proxy(self) -> dict:
+        return {
+            "name": self.title,
+            "type": "ss",
+            "server": self.ip,
+            "port": self.port,
+            "cipher": self.method,
+            "password": self.password,
+            "udp": True,
+        }
+
+    def to_v2ray_outbound(self) -> dict:
+        return {
+            "tag": self.title,
+            "protocol": "shadowsocks",
+            "settings": {
+                "servers": [{
+                    "address": self.ip,
+                    "port": self.port,
+                    "method": self.method,
+                    "password": self.password,
+                    "ota": False,
+                }]
+            },
+            "streamSettings": {},
+        }
 
 
 class Config:
@@ -114,61 +143,99 @@ class SSExtractorGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("SS Node Extractor")
-        self.root.geometry("820x620")
-        self.root.minsize(820, 620)
+        self.root.geometry("1100x700")
+        self.root.minsize(980, 620)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         self.config = Config.load()
         self.nodes = []
         self.subscription_url = ""
+        self.export_files = {}
+        self.export_dir = DEFAULT_EXPORT_DIR
+        self.export_dir.mkdir(parents=True, exist_ok=True)
+
         self.status_var = tk.StringVar(value="就绪")
+        self.summary_var = tk.StringVar(value="总节点数：0\n有效节点数：0\n导出目录：exports")
+        self.export_paths_var = tk.StringVar(value="最近导出：暂无")
+        self.subscription_var = tk.StringVar(value="订阅链接：尚未生成")
 
         self.setup_ui()
 
     def setup_ui(self):
-        title_frame = ttk.Frame(self.root)
-        title_frame.pack(pady=(12, 6))
+        self.root.configure(bg="#f3f5f9")
 
-        ttk.Label(title_frame, text="SS Node Extractor", font=("Arial", 16, "bold")).pack()
-        ttk.Label(title_frame, text="Version: 2.2").pack()
-        ttk.Label(title_frame, text="适合导入 Clash / V2Ray / V2RayN / 订阅转换工具").pack()
+        toolbar = ttk.Frame(self.root, padding=(18, 10))
+        toolbar.pack(fill=tk.X)
 
-        button_frame = ttk.Frame(self.root)
-        button_frame.pack(pady=10)
+        self.extract_btn = ttk.Button(toolbar, text="提取节点", command=self.start_extraction)
+        self.extract_btn.pack(side=tk.LEFT, padx=(0, 8))
 
-        self.extract_btn = ttk.Button(button_frame, text="提取节点", command=self.start_extraction)
-        self.extract_btn.pack(side=tk.LEFT, padx=5)
+        self.copy_btn = ttk.Button(toolbar, text="复制节点", command=self.copy_nodes, state=tk.DISABLED)
+        self.copy_btn.pack(side=tk.LEFT, padx=8)
 
-        self.copy_btn = ttk.Button(button_frame, text="复制节点", command=self.copy_nodes, state=tk.DISABLED)
-        self.copy_btn.pack(side=tk.LEFT, padx=5)
+        self.save_txt_btn = ttk.Button(toolbar, text="保存TXT", command=self.save_txt, state=tk.DISABLED)
+        self.save_txt_btn.pack(side=tk.LEFT, padx=8)
 
-        self.save_txt_btn = ttk.Button(button_frame, text="保存为TXT", command=self.save_txt, state=tk.DISABLED)
-        self.save_txt_btn.pack(side=tk.LEFT, padx=5)
+        self.save_base64_btn = ttk.Button(toolbar, text="保存Base64", command=self.save_base64, state=tk.DISABLED)
+        self.save_base64_btn.pack(side=tk.LEFT, padx=8)
 
-        self.save_base64_btn = ttk.Button(button_frame, text="保存为Base64", command=self.save_base64, state=tk.DISABLED)
-        self.save_base64_btn.pack(side=tk.LEFT, padx=5)
+        self.generate_url_btn = ttk.Button(toolbar, text="生成订阅链接", command=self.generate_subscription_link, state=tk.DISABLED)
+        self.generate_url_btn.pack(side=tk.LEFT, padx=8)
 
-        self.generate_url_btn = ttk.Button(button_frame, text="生成订阅链接", command=self.generate_subscription_link, state=tk.DISABLED)
-        self.generate_url_btn.pack(side=tk.LEFT, padx=5)
+        self.copy_url_btn = ttk.Button(toolbar, text="复制订阅链接", command=self.copy_subscription_link, state=tk.DISABLED)
+        self.copy_url_btn.pack(side=tk.LEFT, padx=8)
 
-        self.copy_url_btn = ttk.Button(button_frame, text="复制订阅链接", command=self.copy_subscription_link, state=tk.DISABLED)
-        self.copy_url_btn.pack(side=tk.LEFT, padx=5)
+        self.export_dir_btn = ttk.Button(toolbar, text="导出目录", command=self.choose_export_dir)
+        self.export_dir_btn.pack(side=tk.LEFT, padx=8)
 
-        self.clash_btn = ttk.Button(button_frame, text="Clash转换", command=self.open_clash_page, state=tk.DISABLED)
-        self.clash_btn.pack(side=tk.LEFT, padx=5)
+        self.open_dir_btn = ttk.Button(toolbar, text="打开目录", command=self.open_export_dir)
+        self.open_dir_btn.pack(side=tk.LEFT, padx=8)
 
-        self.progress = ttk.Progressbar(self.root, mode="indeterminate")
-        self.progress.pack(fill=tk.X, padx=20, pady=(5, 10))
+        main = ttk.Frame(self.root)
+        main.pack(fill=tk.BOTH, expand=True, padx=18, pady=(0, 12))
 
-        ttk.Label(self.root, text="节点列表").pack(anchor=tk.W, padx=20)
-        self.result_text = tk.Text(self.root, width=110, height=18, wrap=tk.NONE)
-        self.result_text.pack(padx=20, pady=(5, 10), fill=tk.BOTH, expand=True)
+        left_panel = ttk.Frame(main)
+        left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        self.url_var = tk.StringVar(value="订阅链接：尚未生成")
-        ttk.Label(self.root, textvariable=self.url_var, foreground="#1f5fbf", wraplength=760, justify=tk.LEFT).pack(anchor=tk.W, padx=20, pady=(0, 8))
+        ttk.Label(left_panel, text="节点列表", font=("Arial", 11, "bold")).pack(anchor=tk.W, pady=(0, 6))
 
-        ttk.Separator(self.root, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=20, pady=(0, 8))
-        ttk.Label(self.root, textvariable=self.status_var, foreground="#2c7a2c").pack(anchor=tk.W, padx=20, pady=(0, 10))
+        columns = ("title", "ip", "port", "method")
+        self.tree = ttk.Treeview(left_panel, columns=columns, show="headings", height=22)
+        self.tree.heading("title", text="名称")
+        self.tree.heading("ip", text="IP")
+        self.tree.heading("port", text="端口")
+        self.tree.heading("method", text="方法")
+        self.tree.column("title", width=220, anchor=tk.W)
+        self.tree.column("ip", width=180, anchor=tk.W)
+        self.tree.column("port", width=80, anchor=tk.CENTER)
+        self.tree.column("method", width=120, anchor=tk.W)
+
+        y_scroll = ttk.Scrollbar(left_panel, orient=tk.VERTICAL, command=self.tree.yview)
+        x_scroll = ttk.Scrollbar(left_panel, orient=tk.HORIZONTAL, command=self.tree.xview)
+        self.tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        y_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        x_scroll.pack(side=tk.BOTTOM, fill=tk.X)
+
+        right_panel = ttk.Frame(main, padding=10)
+        right_panel.pack(side=tk.RIGHT, fill=tk.Y, padx=(12, 0))
+
+        stat_card = ttk.LabelFrame(right_panel, text="统计", padding=10)
+        stat_card.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(stat_card, textvariable=self.summary_var, justify=tk.LEFT, anchor=tk.W).pack(anchor=tk.W)
+
+        subscribe_card = ttk.LabelFrame(right_panel, text="订阅", padding=10)
+        subscribe_card.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(subscribe_card, textvariable=self.subscription_var, justify=tk.LEFT, wraplength=300, anchor=tk.W).pack(anchor=tk.W)
+
+        export_card = ttk.LabelFrame(right_panel, text="导出信息", padding=10)
+        export_card.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(export_card, textvariable=self.export_paths_var, justify=tk.LEFT, wraplength=300, anchor=tk.W).pack(anchor=tk.W)
+
+        status_bar = ttk.Frame(self.root, padding=(18, 8))
+        status_bar.pack(fill=tk.X)
+        ttk.Label(status_bar, textvariable=self.status_var, foreground="#2c7a2c").pack(anchor=tk.W)
 
     def _set_button_state(self, enabled: bool):
         state = tk.NORMAL if enabled else tk.DISABLED
@@ -178,14 +245,21 @@ class SSExtractorGUI:
         self.save_base64_btn.config(state=tk.NORMAL if enabled and self.nodes else tk.DISABLED)
         self.generate_url_btn.config(state=tk.NORMAL if enabled and self.nodes else tk.DISABLED)
         self.copy_url_btn.config(state=tk.NORMAL if enabled and self.subscription_url else tk.DISABLED)
-        self.clash_btn.config(state=tk.NORMAL if enabled and self.nodes else tk.DISABLED)
+
+    def update_summary(self):
+        total = len(self.nodes)
+        valid = total
+        export_dir_text = str(self.export_dir)
+        self.summary_var.set(f"总节点数：{total}\n有效节点数：{valid}\n导出目录：{export_dir_text}")
 
     def start_extraction(self):
         self._set_button_state(False)
         self.subscription_url = ""
-        self.url_var.set("订阅链接：尚未生成")
-        self.result_text.delete(1.0, tk.END)
+        self.subscription_var.set("订阅链接：尚未生成")
+        self.export_paths_var.set("最近导出：暂无")
         self.status_var.set("正在提取节点...")
+        self.progress = ttk.Progressbar(self.root, mode="indeterminate")
+        self.progress.pack(fill=tk.X, padx=18, pady=(0, 8))
         self.progress.start()
 
         thread = threading.Thread(target=self._extract_worker, daemon=True)
@@ -197,7 +271,6 @@ class SSExtractorGUI:
             decrypt_cfg = self.config.get("decrypt", {})
             key = str(decrypt_cfg.get("key", "")).encode("utf-8")
             iv = str(decrypt_cfg.get("iv", "")).encode("utf-8")
-
             nodes = self.parse_server_response(raw, key, iv)
             self.root.after(0, lambda: self._on_loaded(nodes))
         except Exception as exc:
@@ -275,16 +348,26 @@ class SSExtractorGUI:
         return deduped
 
     def _on_loaded(self, nodes):
-        self.progress.stop()
+        if hasattr(self, "progress"):
+            self.progress.stop()
+            self.progress.pack_forget()
+
         self.nodes = nodes
         self.subscription_url = ""
-        self.url_var.set("订阅链接：尚未生成")
+        self.export_files = {}
+        self.subscription_var.set("订阅链接：尚未生成")
+        self.export_paths_var.set("最近导出：暂无")
         self._set_button_state(True)
-        self.result_text.delete(1.0, tk.END)
-        for node in nodes:
-            self.result_text.insert(tk.END, node.to_ss_url() + "\n")
+        self._refresh_tree()
+        self.update_summary()
+        self.auto_export_all()
 
-        self.status_var.set(f"提取完成，共 {len(nodes)} 个有效节点")
+    def _refresh_tree(self):
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+
+        for node in self.nodes:
+            self.tree.insert("", tk.END, values=(node.title, node.ip, node.port, node.method))
 
     def get_base64_subscription(self):
         if not self.nodes:
@@ -331,16 +414,64 @@ class SSExtractorGUI:
             )
         return url
 
+    def choose_export_dir(self):
+        chosen = filedialog.askdirectory(title="选��导出目录", initialdir=str(self.export_dir))
+        if chosen:
+            self.export_dir = Path(chosen)
+            self.export_dir.mkdir(parents=True, exist_ok=True)
+            self.update_summary()
+            self.status_var.set(f"导出目录已更新: {self.export_dir}")
+
+    def open_export_dir(self):
+        if not self.export_dir.exists():
+            self.export_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            if os.name == "nt":
+                os.startfile(str(self.export_dir))
+            else:
+                webbrowser.open(str(self.export_dir))
+        except Exception as exc:
+            self.show_error(f"打开导出目录失败: {exc}")
+
+    def auto_export_all(self):
+        if not self.nodes:
+            return
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        folder = self.export_dir / timestamp
+        folder.mkdir(parents=True, exist_ok=True)
+
+        txt_content = "\n".join(node.to_ss_url() for node in self.nodes)
+        base64_content = self.get_base64_subscription()
+
+        clash_data = {"proxies": [node.to_clash_proxy() for node in self.nodes], "rules": ["MATCH,DIRECT"]}
+        v2ray_data = {"log": {"loglevel": "warning"}, "outbounds": [node.to_v2ray_outbound() for node in self.nodes]}
+
+        self.export_files = {
+            "txt": self._write_export(folder, "ss_nodes", txt_content, "txt"),
+            "base64": self._write_export(folder, "subscription_base64", base64_content, "txt"),
+            "clash": self._write_export(folder, "clash_config", yaml.safe_dump(clash_data, sort_keys=False, allow_unicode=True), "yaml"),
+            "v2ray": self._write_export(folder, "v2ray_config", json.dumps(v2ray_data, ensure_ascii=False, indent=2), "json"),
+        }
+
+        recent = "\n".join(f"{name}: {path}" for name, path in self.export_files.items())
+        self.export_paths_var.set(f"最近导出：\n{recent}")
+        self.status_var.set(f"已自动导出 {len(self.export_files)} 个文件到 {folder}")
+
+    def _write_export(self, folder: Path, name: str, content: str, suffix: str) -> str:
+        path = folder / f"{name}.{suffix}"
+        with path.open("w", encoding="utf-8") as fp:
+            fp.write(content)
+        return str(path)
+
     def generate_subscription_link(self):
         if not self.nodes:
             self.show_error("没有可生成的节点")
             return
         try:
             self.subscription_url = self.build_subscription_link(target="v2ray")
-            self.url_var.set(f"订阅链接：{self.subscription_url}")
+            self.subscription_var.set(f"订阅链接：{self.subscription_url}")
             self.copy_url_btn.config(state=tk.NORMAL)
-            self.status_var.set("订阅链接已生成，可直接复制或打开")
-            self.show_message("订阅链接已生成，可复制到 V2Ray / V2RayN / Clash 订阅入口")
+            self.status_var.set("订阅链接已生成，可直接复制到客户端")
         except Exception as exc:
             self.show_error(f"生成订阅链接失败: {exc}")
 
@@ -351,7 +482,6 @@ class SSExtractorGUI:
         try:
             pyperclip.copy(self.subscription_url)
             self.status_var.set("订阅链接已复制到剪贴板")
-            self.show_message("订阅链接已复制到剪贴板")
         except Exception as exc:
             self.show_error(f"复制订阅链接失败: {exc}")
 
@@ -364,7 +494,6 @@ class SSExtractorGUI:
             content = "\n".join(node.to_ss_url() for node in self.nodes)
             pyperclip.copy(content)
             self.status_var.set("节点已复制到剪贴板")
-            self.show_message("节点已复制到剪贴板")
         except Exception as exc:
             self.show_error(f"复制失败: {exc}")
 
@@ -376,10 +505,10 @@ class SSExtractorGUI:
         try:
             content = "\n".join(node.to_ss_url() for node in self.nodes)
             filename = f"ss_nodes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-            with open(filename, "w", encoding="utf-8") as f:
-                f.write(content)
-            self.status_var.set(f"TXT 已保存: {filename}")
-            self.show_message(f"TXT 已保存: {filename}")
+            path = self.export_dir / filename
+            path.write_text(content, encoding="utf-8")
+            self.export_paths_var.set(f"最近导出：{path}")
+            self.status_var.set(f"TXT 已保存: {path}")
         except Exception as exc:
             self.show_error(f"保存 TXT 失败: {exc}")
 
@@ -391,32 +520,19 @@ class SSExtractorGUI:
         try:
             encoded = self.get_base64_subscription()
             filename = f"subscription_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-            with open(filename, "w", encoding="utf-8") as f:
-                f.write(encoded)
-            self.status_var.set(f"Base64 已保存: {filename}")
-            self.show_message(f"Base64 已保存: {filename}")
+            path = self.export_dir / filename
+            path.write_text(encoded, encoding="utf-8")
+            self.export_paths_var.set(f"最近导出：{path}")
+            self.status_var.set(f"Base64 已保存: {path}")
         except Exception as exc:
             self.show_error(f"保存 Base64 失败: {exc}")
 
-    def open_clash_page(self):
-        if not self.nodes:
-            self.show_error("没有可转换的节点")
-            return
-
-        try:
-            self.subscription_url = self.build_subscription_link(target="clash")
-            self.url_var.set(f"Clash 订阅链接：{self.subscription_url}")
-            webbrowser.open(self.subscription_url, new=2)
-            self.status_var.set("已打开 Clash 转换页面")
-            self.show_message("已打开 Clash 转换页面")
-        except Exception as exc:
-            self.show_error(f"打开 Clash 页面失败: {exc}")
-
-    def show_message(self, message):
-        messagebox.showinfo("提示", message)
-
     def show_error(self, message):
-        self.progress.stop()
+        if hasattr(self, "progress"):
+            try:
+                self.progress.stop()
+            except Exception:
+                pass
         self._set_button_state(True)
         self.status_var.set("发生错误")
         messagebox.showerror("错误", message)
@@ -427,5 +543,5 @@ class SSExtractorGUI:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = SSExtractorGUI(root)
+    SSExtractorGUI(root)
     root.mainloop()

@@ -1,30 +1,37 @@
 # SS Node Extractor
 
-This repository contains a Python GUI tool to fetch and decode SS node lists, then export them as plain text, Base64 subscription, or open a Clash conversion page.
+This repository contains a Python GUI tool for extracting SS node lists, decoding the upstream encrypted payload, and exporting valid nodes for local use or subscription import.
 
 ## Features
 
-- Fetch server list from a configured API
-- Decode AES-CBC encrypted payload
-- Convert nodes into `ss://...` format
-- Copy to clipboard
-- Save as TXT and Base64
-- Open a Clash conversion page directly
-- Configurable via `config.yaml`
+- Fetches the server list from the configured API
+- Decodes the AES-CBC payload automatically
+- Filters and deduplicates nodes
+- Lists valid nodes with title, IP, port, and method
+- Copies nodes to clipboard
+- Saves raw `ss://` links as TXT
+- Saves Base64 subscription content
+- Generates a subscription URL suitable for V2Ray / V2RayN / Clash clients
+- Automatically exports a set of files into the `exports/` directory
+  - `ss_nodes.txt`
+  - `subscription_base64.txt`
+  - `clash_config.yaml`
+  - `v2ray_config.json`
+- Supports a custom export directory selection
 
-## Windows quick start
+## Quick start on Windows
 
-1. Install Python 3.9+ and make sure `python` is in PATH.
-2. Open a command prompt in the project folder.
-3. Run:
+1. Install Python 3.9+
+2. Open a terminal in the project folder
+3. Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-4. Double-click `run_gui.bat` to start the app.
+4. Double-click `run_gui.bat` to launch the app.
 
-## Manual start
+## Manual launch
 
 ```bash
 python ss_extractor_gui.py
@@ -32,9 +39,20 @@ python ss_extractor_gui.py
 
 ## Config
 
-- Copy `config.example.yaml` to `config.yaml`
-- Adjust API parameters and decryption key if needed
+- Copy `config.example.yaml` to `config.yaml` if needed
+- Update the API URL, headers, or decryption key as required
 
-## Notes
+## Export behavior
 
-This tool depends on the upstream API format. If the server changes its payload or encryption settings, update `config.yaml` and the decryption logic accordingly.
+After a successful extraction, the app automatically creates a timestamped folder under `exports/` and saves the following files:
+
+```text
+exports/
+  20261027_120000/
+    ss_nodes.txt
+    subscription_base64.txt
+    clash_config.yaml
+    v2ray_config.json
+```
+
+This makes it easy to import the result into software such as Clash or V2RayN.
