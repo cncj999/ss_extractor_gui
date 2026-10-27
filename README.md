@@ -1,23 +1,23 @@
 # SS Node Extractor
 
-This repository contains a Python GUI tool for extracting SS node lists, decoding the upstream encrypted payload, and exporting valid nodes for local use or subscription import.
+This repository contains a Python GUI tool for extracting SS node lists, decoding the upstream encrypted payload, exporting valid nodes, and generating subscription formats for tools like Clash and V2RayN.
 
 ## Features
 
-- Fetches the server list from the configured API
-- Decodes the AES-CBC payload automatically
-- Filters and deduplicates nodes
-- Lists valid nodes with title, IP, port, and method
-- Copies nodes to clipboard
-- Saves raw `ss://` links as TXT
-- Saves Base64 subscription content
-- Generates a subscription URL suitable for V2Ray / V2RayN / Clash clients
-- Automatically exports a set of files into the `exports/` directory
+- Fetch server list from a configured API
+- Decode AES-CBC encrypted payloads automatically
+- Deduplicate and validate nodes
+- Display nodes in a desktop-style GUI
+- Copy nodes to clipboard
+- Save raw `ss://` links as TXT
+- Save Base64 subscription content
+- Generate subscription URLs for V2Ray / V2RayN / Clash clients
+- Automatically export files into an `exports/` directory
   - `ss_nodes.txt`
   - `subscription_base64.txt`
   - `clash_config.yaml`
   - `v2ray_config.json`
-- Supports a custom export directory selection
+- Windows double-click launcher via `run_gui.bat`
 
 ## Quick start on Windows
 
@@ -29,13 +29,35 @@ This repository contains a Python GUI tool for extracting SS node lists, decodin
 pip install -r requirements.txt
 ```
 
-4. Double-click `run_gui.bat` to launch the app.
-
-## Manual launch
+4. Launch the GUI:
 
 ```bash
 python ss_extractor_gui.py
 ```
+
+or simply double-click:
+
+```bash
+run_gui.bat
+```
+
+## Build to EXE
+
+To package this app as a single Windows executable:
+
+1. Install PyInstaller:
+
+```bash
+pip install pyinstaller
+```
+
+2. Run the build script:
+
+```bash
+build_exe.bat
+```
+
+3. The generated EXE will appear in the `dist/` folder.
 
 ## Config
 
